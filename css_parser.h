@@ -15,6 +15,9 @@ struct Style {
 
     unsigned char border_r = 0, border_g = 0, border_b = 0, border_a = 255;
     int width = -1, height = -1;
+    int max_width = -1;
+    float width_percent = -1.0f, height_percent = -1.0f;
+    float max_width_percent = -1.0f;
     int margin_top = 0, margin_right = 0, margin_bottom = 0, margin_left = 0;
     int padding_top = 0, padding_right = 0, padding_bottom = 0, padding_left = 0;
     int border_width = 0;
@@ -250,6 +253,16 @@ private:
         return fallback;
     }
 
+    static float percentage(const std::string& value) {
+        const std::string normalized = lower(trim(value));
+        if (normalized.empty() || normalized.back() != '%') return -1.0f;
+        try {
+            return std::stof(normalized.substr(0, normalized.length() - 1)) / 100.0f;
+        } catch (...) {
+            return -1.0f;
+        }
+    }
+
     static void four_sides(const std::string& value, int& top, int& right, int& bottom, int& left) {
         std::stringstream stream(value);
         std::vector<std::string> values;
@@ -294,8 +307,9 @@ private:
         else if ((key == "background-color" || key == "background") && parse_color(value, red, green, blue, alpha)) { style.r = red; style.g = green; style.b = blue; style.a = alpha; }
         else if (key == "border-color" && parse_color(value, red, green, blue, alpha)) { style.border_r = red; style.border_g = green; style.border_b = blue; style.border_a = alpha; }
         else if (key == "font-size") { style.font_size = length(value, style.font_size); if (style.font_size < 1) style.font_size = 1; }
-        else if (key == "width") style.width = length(value, style.width);
-        else if (key == "height") style.height = length(value, style.height);
+        else if (key == "width") { style.width = length(value, style.width); style.width_percent = percentage(value); }
+        else if (key == "height") { style.height = length(value, style.height); style.height_percent = percentage(value); }
+        else if (key == "max-width") { style.max_width = length(value, style.max_width); style.max_width_percent = percentage(value); }
         else if (key == "margin") four_sides(value, style.margin_top, style.margin_right, style.margin_bottom, style.margin_left);
         else if (key == "padding") four_sides(value, style.padding_top, style.padding_right, style.padding_bottom, style.padding_left);
         else if (key == "margin-top") style.margin_top = length(value, style.margin_top);

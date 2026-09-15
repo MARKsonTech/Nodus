@@ -77,6 +77,9 @@ public:
             element->element_id = get_attribute(tag_content, "id");
             element->class_name = get_attribute(tag_content, "class");
             element->inline_style = get_attribute(tag_content, "style");
+            if (tag_name == "a" || tag_name == "area") {
+                element->href = resolve_url(base_url, get_attribute(tag_content, "href"));
+            }
             if (tag_name == "img") {
                 element->image_src = resolve_url(base_url, get_attribute(tag_content, "src"));
                 element->image_width = parse_attribute_length(get_attribute(tag_content, "width"));
@@ -109,9 +112,19 @@ private:
 
     static std::string get_attribute(const std::string& tag_content, const std::string& name) {
         const std::string normalized = lower(tag_content);
-        size_t position = normalized.find(lower(name) + "=");
+        const std::string normalized_name = lower(name);
+        size_t position = normalized.find(normalized_name);
+        while (position != std::string::npos) {
+            const bool valid_start = position == 0 || std::isspace(static_cast<unsigned char>(normalized[position - 1]));
+            size_t equals = position + normalized_name.length();
+            while (equals < normalized.length() && std::isspace(static_cast<unsigned char>(normalized[equals]))) ++equals;
+            if (valid_start && equals < normalized.length() && normalized[equals] == '=') {
+                position = equals + 1;
+                break;
+            }
+            position = normalized.find(normalized_name, position + 1);
+        }
         if (position == std::string::npos) return {};
-        position += name.length() + 1;
         while (position < tag_content.length() && std::isspace(static_cast<unsigned char>(tag_content[position]))) ++position;
         if (position >= tag_content.length()) return {};
 
@@ -222,8 +235,8 @@ private:
         if (!node->inline_style.empty()) CSSParser::merge(computed, CSSParser::parse_style_attribute(node->inline_style));
         node->style = computed;
         if (node->tag_name == "img") {
-            if (node->style.properties.count("width")) node->image_width = node->style.width;
-            if (node->style.properties.count("height")) node->image_height = node->style.height;
+            if (node->style.properties.count("width") && node->style.width_percent < 0) node->image_width = node->style.width;
+            if (node->style.properties.count("height") && node->style.height_percent < 0) node->image_height = node->style.height;
         }
         for (const auto& child : node->children) {
             apply_styles(child, rules);
@@ -236,6 +249,12 @@ private:
                 child->style.font_weight = node->style.font_weight;
                 child->style.font_style = node->style.font_style;
                 child->style.text_align = node->style.text_align;
+                if (node->tag_name == "a" && !node->href.empty()) {
+                    child->style.text_r = 0;
+                    child->style.text_g = 102;
+                    child->style.text_b = 204;
+                    child->style.text_decoration = "underline";
+                }
             }
         }
     }

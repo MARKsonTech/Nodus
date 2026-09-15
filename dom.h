@@ -14,9 +14,12 @@ struct Node {
     std::string element_id;
     std::string class_name;
     std::string inline_style;
+    std::string href;
     std::string image_src;
     int image_width = -1;
     int image_height = -1;
+    int intrinsic_width = -1;
+    int intrinsic_height = -1;
     Style style;
     std::vector<std::shared_ptr<Node>> children;
     std::weak_ptr<Node> parent;

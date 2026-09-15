@@ -9,11 +9,15 @@
 
 class RenderEngine {
 public:
+    static constexpr size_t max_image_memory = 256ull * 1024ull * 1024ull;
+
     static void clear_image_cache() {
         for (auto& image : image_cache()) {
             SDL_DestroyTexture(image.second);
         }
         image_cache().clear();
+        image_sizes().clear();
+        image_memory() = 0;
     }
 
     static void prepare_images(SDL_Renderer* renderer, const std::shared_ptr<Node>& node) {
@@ -25,6 +29,8 @@ public:
                 int intrinsic_width = 0;
                 int intrinsic_height = 0;
                 SDL_QueryTexture(texture, nullptr, nullptr, &intrinsic_width, &intrinsic_height);
+                node->intrinsic_width = intrinsic_width;
+                node->intrinsic_height = intrinsic_height;
 
                 if (node->image_width <= 0 && node->image_height <= 0) {
                     node->image_width = intrinsic_width;
@@ -97,6 +103,21 @@ public:
         }
     }
 
+    static std::string link_at(const LayoutNode& layout_node, int x, int y, int scroll_y) {
+        if (!layout_node.node) return {};
+        SDL_Rect bounds = layout_node.rect;
+        bounds.y -= scroll_y;
+        if (!layout_node.node->href.empty() && x >= bounds.x && x < bounds.x + bounds.w &&
+            y >= bounds.y && y < bounds.y + bounds.h) {
+            return layout_node.node->href;
+        }
+        for (const auto& child : layout_node.children) {
+            const std::string href = link_at(child, x, y, scroll_y);
+            if (!href.empty()) return href;
+        }
+        return {};
+    }
+
 private:
     static std::unordered_map<std::string, SDL_Texture*>& image_cache() {
         static std::unordered_map<std::string, SDL_Texture*> cache;
@@ -121,12 +142,32 @@ private:
         }
 
         if (!surface) return nullptr;
+        const size_t texture_bytes = static_cast<size_t>(surface->w) * static_cast<size_t>(surface->h) * 4;
         SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
         SDL_FreeSurface(surface);
         if (!texture) return nullptr;
 
         SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+        while (image_memory() + texture_bytes > max_image_memory && !cache.empty()) {
+            auto oldest = cache.begin();
+            SDL_DestroyTexture(oldest->second);
+            image_memory() -= image_sizes()[oldest->first];
+            image_sizes().erase(oldest->first);
+            cache.erase(oldest);
+        }
         cache[source] = texture;
+        image_sizes()[source] = texture_bytes;
+        image_memory() += texture_bytes;
         return texture;
+    }
+
+    static size_t& image_memory() {
+        static size_t bytes = 0;
+        return bytes;
+    }
+
+    static std::unordered_map<std::string, size_t>& image_sizes() {
+        static std::unordered_map<std::string, size_t> sizes;
+        return sizes;
     }
 };

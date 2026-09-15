@@ -47,21 +47,32 @@ int main(int argc, char* argv[]) {
 
     // Target URL
     std::string target_url = "https://nodus-engine.netlify.app/simple";
-    std::cout << "Fetching: " << target_url << "...\n";
 
-    std::string html_content = NetFetcher::fetch(target_url);
-    std::cout << "Fetched " << html_content.length() << " bytes.\n";
-
-    auto dom_root = HTMLParser::parse(html_content, target_url);
-    RenderEngine::prepare_images(renderer, dom_root);
     FontManager font_mgr("C:\\Windows\\Fonts\\arial.ttf");
-    LayoutNode layout_tree = LayoutEngine::layout(dom_root, font_mgr);
     int scroll_y = 0;
     int viewport_width = 800;
     int viewport_height = 600;
+    std::shared_ptr<Node> dom_root;
+    LayoutNode layout_tree;
+
+    auto load_page = [&]() {
+        std::cout << "Fetching: " << target_url << "...\n";
+        const std::string page = NetFetcher::fetch(target_url);
+        std::cout << "Fetched " << page.length() << " bytes.\n";
+        RenderEngine::clear_image_cache();
+        dom_root = HTMLParser::parse(page, target_url);
+        RenderEngine::prepare_images(renderer, dom_root);
+        layout_tree = LayoutEngine::layout(dom_root, font_mgr, viewport_width - 40);
+        scroll_y = 0;
+    };
+
+    load_page();
 
     bool running = true;
     SDL_Event event;
+    SDL_Cursor* arrow_cursor = SDL_GetDefaultCursor();
+    SDL_Cursor* hand_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
+    SDL_SetCursor(arrow_cursor);
 
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -69,6 +80,15 @@ int main(int argc, char* argv[]) {
                 running = false;
             } else if (event.type == SDL_MOUSEWHEEL) {
                 scroll_y -= event.wheel.y * 40;
+            } else if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_LEFT) {
+                const std::string href = RenderEngine::link_at(layout_tree, event.button.x, event.button.y, scroll_y);
+                if (!href.empty() && href[0] != '#') {
+                    target_url = href;
+                    load_page();
+                }
+            } else if (event.type == SDL_MOUSEMOTION) {
+                const std::string href = RenderEngine::link_at(layout_tree, event.motion.x, event.motion.y, scroll_y);
+                SDL_SetCursor(href.empty() ? arrow_cursor : hand_cursor);
             } else if (event.type == SDL_KEYDOWN) {
                 if (event.key.keysym.sym == SDLK_DOWN) {
                     scroll_y += 40;
@@ -91,6 +111,11 @@ int main(int argc, char* argv[]) {
         }
 
         SDL_GetWindowSize(window, &viewport_width, &viewport_height);
+        static int laid_out_width = viewport_width;
+        if (viewport_width != laid_out_width) {
+            layout_tree = LayoutEngine::layout(dom_root, font_mgr, viewport_width - 40);
+            laid_out_width = viewport_width;
+        }
         const int max_scroll = layout_tree.rect.y + layout_tree.rect.h - viewport_height;
         if (scroll_y < 0) scroll_y = 0;
         if (max_scroll <= 0) scroll_y = 0;
@@ -108,6 +133,7 @@ int main(int argc, char* argv[]) {
     }
 
     RenderEngine::clear_image_cache();
+    if (hand_cursor) SDL_FreeCursor(hand_cursor);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     IMG_Quit();
