@@ -1,6 +1,8 @@
 #include <SDL.h>
+#include <SDL_syswm.h>
 #include <SDL_ttf.h>
 #include <SDL_image.h>
+#include <windows.h>
 #include <iostream>
 #include <string>
 
@@ -43,7 +45,18 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    const HICON app_icon = static_cast<HICON>(LoadImageA(
+        GetModuleHandleA(nullptr), MAKEINTRESOURCEA(101), IMAGE_ICON,
+        0, 0, LR_DEFAULTSIZE | LR_SHARED
+    ));
+    SDL_SysWMinfo window_info;
+    SDL_VERSION(&window_info.version);
+    if (app_icon && SDL_GetWindowWMInfo(window, &window_info)) {
+        SendMessageA(window_info.info.win.window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(app_icon));
+        SendMessageA(window_info.info.win.window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(app_icon));
+    }
+
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 
     // Target URL
     std::string target_url = "https://nodus-engine.netlify.app/simple";
@@ -69,26 +82,35 @@ int main(int argc, char* argv[]) {
     load_page();
 
     bool running = true;
+    bool needs_redraw = true;
     SDL_Event event;
     SDL_Cursor* arrow_cursor = SDL_GetDefaultCursor();
     SDL_Cursor* hand_cursor = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND);
     SDL_SetCursor(arrow_cursor);
+    const Uint32 frame_delay = 1000u / 60u;
+    Uint32 last_redraw = 0;
 
     while (running) {
+        const Uint32 frame_start = SDL_GetTicks();
+        bool processed_event = false;
         while (SDL_PollEvent(&event)) {
+            processed_event = true;
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_MOUSEWHEEL) {
                 scroll_y -= event.wheel.y * 40;
+                needs_redraw = true;
             } else if (event.type == SDL_MOUSEBUTTONUP && event.button.button == SDL_BUTTON_LEFT) {
                 const std::string href = RenderEngine::link_at(layout_tree, event.button.x, event.button.y, scroll_y);
                 if (!href.empty() && href[0] != '#') {
                     target_url = href;
                     load_page();
+                    needs_redraw = true;
                 }
             } else if (event.type == SDL_MOUSEMOTION) {
                 const std::string href = RenderEngine::link_at(layout_tree, event.motion.x, event.motion.y, scroll_y);
                 SDL_SetCursor(href.empty() ? arrow_cursor : hand_cursor);
+                needs_redraw = true;
             } else if (event.type == SDL_KEYDOWN) {
                 if (event.key.keysym.sym == SDLK_DOWN) {
                     scroll_y += 40;
@@ -107,6 +129,7 @@ int main(int argc, char* argv[]) {
                 const int max_scroll = layout_tree.rect.y + layout_tree.rect.h - viewport_height;
                 if (scroll_y < 0) scroll_y = 0;
                 if (scroll_y > max_scroll && max_scroll > 0) scroll_y = max_scroll;
+                needs_redraw = true;
             }
         }
 
@@ -115,21 +138,38 @@ int main(int argc, char* argv[]) {
         if (viewport_width != laid_out_width) {
             layout_tree = LayoutEngine::layout(dom_root, font_mgr, viewport_width - 40);
             laid_out_width = viewport_width;
+            needs_redraw = true;
         }
         const int max_scroll = layout_tree.rect.y + layout_tree.rect.h - viewport_height;
         if (scroll_y < 0) scroll_y = 0;
         if (max_scroll <= 0) scroll_y = 0;
         else if (scroll_y > max_scroll) scroll_y = max_scroll;
 
-        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        SDL_RenderClear(renderer);
+        const Uint32 now = SDL_GetTicks();
+        const bool idle = !needs_redraw && !processed_event;
+        if (idle) {
+            SDL_Delay(8);
+            continue;
+        }
 
-        SDL_Rect viewport = { 0, 0, viewport_width, viewport_height };
-        SDL_RenderSetClipRect(renderer, &viewport);
-        RenderEngine::render(renderer, layout_tree, font_mgr, scroll_y);
-        SDL_RenderSetClipRect(renderer, nullptr);
+        if (needs_redraw && now - last_redraw >= frame_delay) {
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            SDL_RenderClear(renderer);
 
-        SDL_RenderPresent(renderer);
+            SDL_Rect viewport = { 0, 0, viewport_width, viewport_height };
+            SDL_RenderSetClipRect(renderer, &viewport);
+            RenderEngine::render(renderer, layout_tree, font_mgr, scroll_y);
+            SDL_RenderSetClipRect(renderer, nullptr);
+
+            SDL_RenderPresent(renderer);
+            needs_redraw = false;
+            last_redraw = now;
+        }
+
+        const Uint32 elapsed = SDL_GetTicks() - frame_start;
+        if (elapsed < frame_delay) {
+            SDL_Delay(frame_delay - elapsed);
+        }
     }
 
     RenderEngine::clear_image_cache();

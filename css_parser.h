@@ -10,6 +10,7 @@
 
 struct Style {
     unsigned char r = 255, g = 255, b = 255, a = 255;
+    bool background_set = false;
     unsigned char text_r = 0, text_g = 0, text_b = 0;
     int font_size = 16;
 
@@ -39,6 +40,7 @@ struct Style {
     std::string background_size = "auto";
 
     std::unordered_map<std::string, std::string> properties;
+    std::vector<std::string> property_order;
 };
 
 struct CSSRule {
@@ -64,6 +66,9 @@ public:
             if (key.empty() || value.empty()) continue;
 
             style.properties[key] = value;
+            style.property_order.erase(std::remove(style.property_order.begin(), style.property_order.end(), key),
+                                       style.property_order.end());
+            style.property_order.push_back(key);
             apply(style, key, value);
         }
         return style;
@@ -107,8 +112,14 @@ public:
     }
 
     static void merge(Style& target, const Style& source) {
-        for (const auto& property : source.properties) {
-            apply(target, property.first, property.second);
+        for (const auto& key : source.property_order) {
+            const auto property = source.properties.find(key);
+            if (property == source.properties.end()) continue;
+            target.properties[key] = property->second;
+            target.property_order.erase(std::remove(target.property_order.begin(), target.property_order.end(), key),
+                                        target.property_order.end());
+            target.property_order.push_back(key);
+            apply(target, key, property->second);
         }
     }
 
@@ -304,7 +315,7 @@ private:
     static void apply(Style& style, const std::string& key, const std::string& value) {
         unsigned char red = 0, green = 0, blue = 0, alpha = 255;
         if (key == "color" && parse_color(value, red, green, blue, alpha)) { style.text_r = red; style.text_g = green; style.text_b = blue; }
-        else if ((key == "background-color" || key == "background") && parse_color(value, red, green, blue, alpha)) { style.r = red; style.g = green; style.b = blue; style.a = alpha; }
+        else if ((key == "background-color" || key == "background") && parse_color(value, red, green, blue, alpha)) { style.r = red; style.g = green; style.b = blue; style.a = alpha; style.background_set = true; }
         else if (key == "border-color" && parse_color(value, red, green, blue, alpha)) { style.border_r = red; style.border_g = green; style.border_b = blue; style.border_a = alpha; }
         else if (key == "font-size") { style.font_size = length(value, style.font_size); if (style.font_size < 1) style.font_size = 1; }
         else if (key == "width") { style.width = length(value, style.width); style.width_percent = percentage(value); }

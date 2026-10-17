@@ -9,15 +9,29 @@
 
 class RenderEngine {
 public:
-    static constexpr size_t max_image_memory = 256ull * 1024ull * 1024ull;
+    static constexpr size_t max_image_memory = 512ull * 1024ull * 1024ull;
+    static constexpr size_t max_text_memory = 256ull * 1024ull * 1024ull;
+    static constexpr size_t max_cached_images = 64;
+    static constexpr size_t max_cached_text = 512;
+
+    struct TextureEntry {
+        SDL_Texture* texture = nullptr;
+        size_t bytes = 0;
+        Uint32 last_used = 0;
+    };
 
     static void clear_image_cache() {
         for (auto& image : image_cache()) {
-            SDL_DestroyTexture(image.second);
+            if (image.second.texture) SDL_DestroyTexture(image.second.texture);
         }
         image_cache().clear();
-        image_sizes().clear();
         image_memory() = 0;
+
+        for (auto& text : text_cache()) {
+            if (text.second.texture) SDL_DestroyTexture(text.second.texture);
+        }
+        text_cache().clear();
+        text_memory() = 0;
     }
 
     static void prepare_images(SDL_Renderer* renderer, const std::shared_ptr<Node>& node) {
@@ -56,9 +70,12 @@ public:
         if (layout_node.node->type == NodeType::Element && layout_node.node->tag_name != "img") {
             SDL_Rect background = layout_node.rect;
             background.y -= scroll_y;
-            SDL_SetRenderDrawColor(renderer, layout_node.node->style.r, layout_node.node->style.g,
-                                   layout_node.node->style.b, layout_node.node->style.a);
-            SDL_RenderFillRect(renderer, &background);
+            if (layout_node.node->style.background_set) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, layout_node.node->style.r, layout_node.node->style.g,
+                                       layout_node.node->style.b, layout_node.node->style.a);
+                SDL_RenderFillRect(renderer, &background);
+            }
             if (layout_node.node->style.border_width > 0 && layout_node.node->style.border_style != "none") {
                 SDL_SetRenderDrawColor(renderer, layout_node.node->style.border_r, layout_node.node->style.border_g,
                                        layout_node.node->style.border_b, layout_node.node->style.border_a);
@@ -78,22 +95,19 @@ public:
                 SDL_RenderCopy(renderer, texture, nullptr, &destination);
             }
         } else if (layout_node.node->type == NodeType::Text) {
+            const std::string& text = layout_node.has_text_fragment ? layout_node.text_fragment : layout_node.node->text_data;
             TTF_Font* font = font_mgr.get_font(layout_node.node->style.font_size > 0 ? layout_node.node->style.font_size : 16,
                                                layout_node.node->style.font_weight == "bold" || layout_node.node->style.font_weight == "700",
-                                               layout_node.node->style.font_style == "italic");
-            if (font && !layout_node.node->text_data.empty()) {
+                                               layout_node.node->style.font_style == "italic",
+                                               text);
+            if (font && !text.empty()) {
                 SDL_Color color = { layout_node.node->style.text_r, layout_node.node->style.text_g,
-                                    layout_node.node->style.text_b, layout_node.node->style.a };
-                SDL_Surface* surface = TTF_RenderUTF8_Blended(font, layout_node.node->text_data.c_str(), color);
-                if (surface) {
-                    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
-                    if (texture) {
-                        SDL_Rect destination = layout_node.rect;
-                        destination.y -= scroll_y;
-                        SDL_RenderCopy(renderer, texture, nullptr, &destination);
-                        SDL_DestroyTexture(texture);
-                    }
-                    SDL_FreeSurface(surface);
+                                    layout_node.node->style.text_b, 255 };
+                SDL_Texture* texture = get_text_texture(renderer, font, text, color);
+                if (texture) {
+                    SDL_Rect destination = layout_node.rect;
+                    destination.y -= scroll_y;
+                    SDL_RenderCopy(renderer, texture, nullptr, &destination);
                 }
             }
         }
@@ -119,16 +133,92 @@ public:
     }
 
 private:
-    static std::unordered_map<std::string, SDL_Texture*>& image_cache() {
-        static std::unordered_map<std::string, SDL_Texture*> cache;
+    static std::unordered_map<std::string, TextureEntry>& image_cache() {
+        static std::unordered_map<std::string, TextureEntry> cache;
         return cache;
+    }
+
+    static std::unordered_map<std::string, TextureEntry>& text_cache() {
+        static std::unordered_map<std::string, TextureEntry> cache;
+        return cache;
+    }
+
+    static size_t& text_memory() {
+        static size_t bytes = 0;
+        return bytes;
+    }
+
+    static void prune_text_cache() {
+        auto& cache = text_cache();
+        while (text_memory() > max_text_memory || cache.size() > max_cached_text) {
+            auto oldest = cache.begin();
+            for (auto it = cache.begin(); it != cache.end(); ++it) {
+                if (it->second.texture && (oldest == cache.end() || it->second.last_used < oldest->second.last_used)) {
+                    oldest = it;
+                }
+            }
+            if (oldest == cache.end()) break;
+            if (oldest->second.texture) SDL_DestroyTexture(oldest->second.texture);
+            text_memory() -= oldest->second.bytes;
+            cache.erase(oldest);
+        }
+    }
+
+    static SDL_Texture* get_text_texture(SDL_Renderer* renderer, TTF_Font* font, const std::string& text, const SDL_Color& color) {
+        if (!font || text.empty()) return nullptr;
+        const std::string font_key = std::to_string(TTF_FontHeight(font)) + ":" + std::to_string(TTF_GetFontStyle(font)) + ":" + std::to_string(color.r) + ":" + std::to_string(color.g) + ":" + std::to_string(color.b) + ":" + text;
+        auto& cache = text_cache();
+        auto existing = cache.find(font_key);
+        if (existing != cache.end()) {
+            existing->second.last_used = SDL_GetTicks();
+            return existing->second.texture;
+        }
+
+        SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
+        if (!surface) return nullptr;
+        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
+        const size_t texture_bytes = static_cast<size_t>(surface->w) * static_cast<size_t>(surface->h) * 4;
+        SDL_FreeSurface(surface);
+        if (!texture) return nullptr;
+
+        prune_text_cache();
+        if (text_memory() + texture_bytes > max_text_memory) {
+            SDL_DestroyTexture(texture);
+            return nullptr;
+        }
+        if (cache.size() >= max_cached_text) {
+            prune_text_cache();
+        }
+
+        cache[font_key] = { texture, texture_bytes, SDL_GetTicks() };
+        text_memory() += texture_bytes;
+        return texture;
+    }
+
+    static void prune_cache() {
+        auto& cache = image_cache();
+        while (image_memory() > max_image_memory || cache.size() > max_cached_images) {
+            auto oldest = cache.begin();
+            for (auto it = cache.begin(); it != cache.end(); ++it) {
+                if (it->second.texture && (oldest == cache.end() || it->second.last_used < oldest->second.last_used)) {
+                    oldest = it;
+                }
+            }
+            if (oldest == cache.end()) break;
+            if (oldest->second.texture) SDL_DestroyTexture(oldest->second.texture);
+            image_memory() -= oldest->second.bytes;
+            cache.erase(oldest);
+        }
     }
 
     static SDL_Texture* get_image(SDL_Renderer* renderer, const std::string& source) {
         if (source.empty()) return nullptr;
         auto& cache = image_cache();
-        const auto existing = cache.find(source);
-        if (existing != cache.end()) return existing->second;
+        auto existing = cache.find(source);
+        if (existing != cache.end()) {
+            existing->second.last_used = SDL_GetTicks();
+            return existing->second.texture;
+        }
 
         SDL_Surface* surface = nullptr;
         if (source.rfind("http://", 0) == 0 || source.rfind("https://", 0) == 0) {
@@ -148,15 +238,19 @@ private:
         if (!texture) return nullptr;
 
         SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-        while (image_memory() + texture_bytes > max_image_memory && !cache.empty()) {
-            auto oldest = cache.begin();
-            SDL_DestroyTexture(oldest->second);
-            image_memory() -= image_sizes()[oldest->first];
-            image_sizes().erase(oldest->first);
-            cache.erase(oldest);
+        prune_cache();
+        if (image_memory() + texture_bytes > max_image_memory) {
+            if (!cache.empty()) prune_cache();
+            if (image_memory() + texture_bytes > max_image_memory) {
+                SDL_DestroyTexture(texture);
+                return nullptr;
+            }
         }
-        cache[source] = texture;
-        image_sizes()[source] = texture_bytes;
+        if (cache.size() >= max_cached_images) {
+            prune_cache();
+        }
+
+        cache[source] = { texture, texture_bytes, SDL_GetTicks() };
         image_memory() += texture_bytes;
         return texture;
     }
@@ -164,10 +258,5 @@ private:
     static size_t& image_memory() {
         static size_t bytes = 0;
         return bytes;
-    }
-
-    static std::unordered_map<std::string, size_t>& image_sizes() {
-        static std::unordered_map<std::string, size_t> sizes;
-        return sizes;
     }
 };

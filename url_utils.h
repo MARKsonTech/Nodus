@@ -1,4 +1,4 @@
-#pragma once
+as #pragma once
 #include <string>
 
 class URLUtils {

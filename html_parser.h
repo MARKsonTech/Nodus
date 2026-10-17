@@ -2,6 +2,7 @@
 #include "dom.h"
 #include "net_fetcher.h"
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <memory>
 #include <sstream>
@@ -20,7 +21,7 @@ public:
         while (position < html.length()) {
             if (html[position] != '<') {
                 const size_t next_tag = html.find('<', position);
-                std::string text = trim(html.substr(position, next_tag == std::string::npos ? std::string::npos : next_tag - position));
+                std::string text = normalize_text(html.substr(position, next_tag == std::string::npos ? std::string::npos : next_tag - position));
                 position = next_tag == std::string::npos ? html.length() : next_tag;
                 if (!text.empty()) {
                     auto text_node = std::make_shared<Node>(NodeType::Text);
@@ -101,6 +102,22 @@ private:
         if (first == std::string::npos) return {};
         const size_t last = value.find_last_not_of(" \t\n\r\f");
         return value.substr(first, last - first + 1);
+    }
+
+    static std::string normalize_text(const std::string& value) {
+        std::string normalized;
+        bool pending_space = false;
+        for (const unsigned char character : value) {
+            if (std::isspace(character)) {
+                pending_space = true;
+            } else {
+                if (pending_space) normalized += ' ';
+                normalized += static_cast<char>(character);
+                pending_space = false;
+            }
+        }
+        if (pending_space) normalized += ' ';
+        return normalized;
     }
 
     static std::string lower(std::string value) {
@@ -226,11 +243,73 @@ private:
         return true;
     }
 
+    static std::array<int, 3> selector_specificity(const std::string& selector) {
+        std::array<int, 3> result{ 0, 0, 0 };
+        std::string normalized = selector;
+        std::replace(normalized.begin(), normalized.end(), '>', ' ');
+        std::stringstream stream(normalized);
+        std::string part;
+        while (stream >> part) {
+            const size_t tag_end = part.find_first_of(".#[:");
+            const std::string tag = tag_end == std::string::npos ? part : part.substr(0, tag_end);
+            if (!tag.empty() && tag != "*") ++result[2];
+            for (size_t index = tag_end == std::string::npos ? part.size() : tag_end; index < part.size(); ++index) {
+                if (part[index] == '#') ++result[0];
+                else if (part[index] == '.' || part[index] == '[') ++result[1];
+                else if (part[index] == ':') {
+                    if (index + 1 < part.size() && part[index + 1] == ':') {
+                        ++result[2];
+                        ++index;
+                    } else {
+                        ++result[1];
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
     static void apply_styles(const std::shared_ptr<Node>& node, const std::vector<CSSRule>& rules) {
         if (!node) return;
         Style computed;
+        const auto parent = node->parent.lock();
+        if (parent) {
+            computed.text_r = parent->style.text_r;
+            computed.text_g = parent->style.text_g;
+            computed.text_b = parent->style.text_b;
+            computed.font_size = parent->style.font_size;
+            computed.font_family = parent->style.font_family;
+            computed.font_weight = parent->style.font_weight;
+            computed.font_style = parent->style.font_style;
+            computed.text_align = parent->style.text_align;
+        }
+        const int inherited_font_size = parent ? parent->style.font_size : 16;
+        int heading_scale = 0;
+        if (node->tag_name == "h1") heading_scale = 200;
+        else if (node->tag_name == "h2") heading_scale = 150;
+        else if (node->tag_name == "h3") heading_scale = 117;
+        else if (node->tag_name == "h4") heading_scale = 100;
+        else if (node->tag_name == "h5") heading_scale = 83;
+        else if (node->tag_name == "h6") heading_scale = 67;
+        if (heading_scale > 0) {
+            if (!computed.properties.count("font-size")) computed.font_size = inherited_font_size * heading_scale / 100;
+            if (!computed.properties.count("font-weight")) computed.font_weight = "bold";
+        }
+        if (node->tag_name == "a" && !node->href.empty()) {
+            computed.text_r = 0;
+            computed.text_g = 102;
+            computed.text_b = 204;
+            computed.text_decoration = "underline";
+        }
+        std::vector<const CSSRule*> matching_rules;
         for (const auto& rule : rules) {
-            if (matches_selector(node, rule.selector)) CSSParser::merge(computed, rule.style);
+            if (matches_selector(node, rule.selector)) matching_rules.push_back(&rule);
+        }
+        std::stable_sort(matching_rules.begin(), matching_rules.end(), [](const CSSRule* left, const CSSRule* right) {
+            return selector_specificity(left->selector) < selector_specificity(right->selector);
+        });
+        for (const auto* rule : matching_rules) {
+            CSSParser::merge(computed, rule->style);
         }
         if (!node->inline_style.empty()) CSSParser::merge(computed, CSSParser::parse_style_attribute(node->inline_style));
         node->style = computed;
@@ -249,12 +328,7 @@ private:
                 child->style.font_weight = node->style.font_weight;
                 child->style.font_style = node->style.font_style;
                 child->style.text_align = node->style.text_align;
-                if (node->tag_name == "a" && !node->href.empty()) {
-                    child->style.text_r = 0;
-                    child->style.text_g = 102;
-                    child->style.text_b = 204;
-                    child->style.text_decoration = "underline";
-                }
+                child->style.text_decoration = node->style.text_decoration;
             }
         }
     }
