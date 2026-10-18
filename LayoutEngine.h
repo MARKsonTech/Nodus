@@ -25,6 +25,39 @@ public:
 
         if (node->style.display == "none") return layout_node;
 
+        if (node->tag_name == "video") {
+            const int content_width = maximum(0, available_width - node->style.margin_left - node->style.margin_right);
+            const bool css_width = node->style.width_percent >= 0 || node->style.width >= 0;
+            const bool css_height = node->style.height_percent >= 0 || node->style.height >= 0;
+            const int requested_width = node->media_width > 0 ? node->media_width : 640;
+            const int default_width = css_width ? requested_width : minimum(requested_width, content_width);
+            layout_node.rect.w = default_width;
+            layout_node.rect.h = node->media_height > 0 ? node->media_height : default_width * 9 / 16;
+
+            if (node->style.width_percent >= 0) layout_node.rect.w = static_cast<int>(content_width * node->style.width_percent);
+            else if (node->style.width >= 0) layout_node.rect.w = node->style.width;
+            if (node->style.max_width_percent >= 0) layout_node.rect.w = minimum(layout_node.rect.w, static_cast<int>(content_width * node->style.max_width_percent));
+            else if (node->style.max_width >= 0) layout_node.rect.w = minimum(layout_node.rect.w, node->style.max_width);
+
+            if (node->style.height_percent >= 0) {
+                layout_node.rect.h = static_cast<int>(content_width * node->style.height_percent);
+            } else if (node->style.height >= 0) {
+                layout_node.rect.h = node->style.height;
+            } else if (css_width && !css_height) {
+                layout_node.rect.h = layout_node.rect.w * 9 / 16;
+            } else if (css_height && !css_width) {
+                layout_node.rect.w = layout_node.rect.h * 16 / 9;
+            } else if ((layout_node.rect.w != requested_width || css_width) && !css_height) {
+                layout_node.rect.h = layout_node.rect.w * 9 / 16;
+            }
+            layout_node.rect.w = maximum(0, layout_node.rect.w);
+            layout_node.rect.h = maximum(0, layout_node.rect.h);
+            const auto parent = node->parent.lock();
+            if (parent && parent->style.text_align == "center") layout_node.rect.x = origin_x + (content_width - layout_node.rect.w) / 2;
+            else if (parent && (parent->style.text_align == "right" || parent->style.text_align == "end")) layout_node.rect.x = origin_x + content_width - layout_node.rect.w;
+            return layout_node;
+        }
+
         if (node->tag_name == "img") {
             const int content_width = maximum(0, available_width - node->style.margin_left - node->style.margin_right);
             const int intrinsic_width = node->intrinsic_width > 0 ? node->intrinsic_width : node->image_width;
@@ -104,7 +137,7 @@ private:
 
     static bool is_inline(const std::shared_ptr<Node>& node) {
         if (node->type == NodeType::Text) return true;
-        if (node->tag_name == "img" || node->tag_name == "br") return true;
+        if (node->tag_name == "img" || node->tag_name == "video" || node->tag_name == "br") return true;
         const auto display = node->style.properties.find("display");
         if (display != node->style.properties.end()) {
             return node->style.display == "inline" || node->style.display == "inline-block" ||
@@ -179,6 +212,7 @@ private:
             return width;
         }
         if (node->tag_name == "img") return node->image_width > 0 ? node->image_width : node->intrinsic_width;
+        if (node->tag_name == "video") return node->media_width > 0 ? node->media_width : 300;
         int width = 0;
         for (const auto& child : node->children) width += intrinsic_width(child, font_mgr);
         return width;
@@ -195,7 +229,8 @@ private:
             next_line(cursor, font ? TTF_FontLineSkip(font) : 16);
             return;
         }
-        if (node->tag_name == "img" || node->style.display == "inline-block" || node->style.display == "inline-flex") {
+        if (node->tag_name == "img" || node->tag_name == "video" ||
+            node->style.display == "inline-block" || node->style.display == "inline-flex") {
             LayoutNode item = layout(node, font_mgr, cursor.right - cursor.start_x, cursor.y, cursor.x);
             if (cursor.x > cursor.start_x && cursor.x + item.rect.w > cursor.right) next_line(cursor, item.rect.h);
             item.rect.x = cursor.x;

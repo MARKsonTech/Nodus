@@ -86,17 +86,53 @@ public:
                 element->image_width = parse_attribute_length(get_attribute(tag_content, "width"));
                 element->image_height = parse_attribute_length(get_attribute(tag_content, "height"));
             }
+            if (tag_name == "video") {
+                element->media_src = resolve_url(base_url, get_attribute(tag_content, "src"));
+                element->poster_src = resolve_url(base_url, get_attribute(tag_content, "poster"));
+                element->media_width = parse_attribute_length(get_attribute(tag_content, "width"));
+                element->media_height = parse_attribute_length(get_attribute(tag_content, "height"));
+                element->media_controls = has_attribute(tag_content, "controls");
+                element->media_autoplay = has_attribute(tag_content, "autoplay");
+                element->media_muted = has_attribute(tag_content, "muted");
+                element->media_loop = has_attribute(tag_content, "loop");
+            }
+            if (tag_name == "source") {
+                element->media_src = resolve_url(base_url, get_attribute(tag_content, "src"));
+                element->media_height = parse_attribute_length(get_attribute(tag_content, "height"));
+                if (element->media_height < 0) {
+                    element->media_height = parse_quality_height(get_attribute(tag_content, "data-quality"));
+                }
+                if (element->media_height < 0) {
+                    element->media_height = parse_attribute_length(get_attribute(tag_content, "data-height"));
+                }
+            }
 
             element->parent = stack.back();
             stack.back()->children.push_back(element);
             if (!is_void_element(tag_name)) stack.push_back(element);
         }
 
+        assign_video_sources(root);
         apply_styles(root, rules);
         return root;
     }
 
 private:
+    static void assign_video_sources(const std::shared_ptr<Node>& node) {
+        if (!node) return;
+        if (node->tag_name == "video") {
+            for (const auto& child : node->children) {
+                if (child->tag_name == "source" && !child->media_src.empty()) {
+                    node->media_sources.push_back({ child->media_src, child->media_height });
+                }
+            }
+            if (node->media_src.empty() && !node->media_sources.empty()) {
+                node->media_src = node->media_sources.front().url;
+            }
+        }
+        for (const auto& child : node->children) assign_video_sources(child);
+    }
+
     static std::string trim(const std::string& value) {
         const size_t first = value.find_first_not_of(" \t\n\r\f");
         if (first == std::string::npos) return {};
@@ -154,6 +190,36 @@ private:
         return tag_content.substr(position, end == std::string::npos ? std::string::npos : end - position);
     }
 
+    static bool has_attribute(const std::string& tag_content, const std::string& name) {
+        const std::string normalized = lower(tag_content);
+        const std::string attribute = lower(name);
+        size_t position = normalized.find_first_of(" \t\r\n");
+        while (position != std::string::npos && position < normalized.size()) {
+            position = normalized.find_first_not_of(" \t\r\n/", position);
+            if (position == std::string::npos) return false;
+            const size_t end = normalized.find_first_of(" \t\r\n=/", position);
+            const std::string candidate = normalized.substr(position, end == std::string::npos ? std::string::npos : end - position);
+            if (candidate == attribute) return true;
+            if (end == std::string::npos) return false;
+
+            position = end;
+            while (position < normalized.size() && std::isspace(static_cast<unsigned char>(normalized[position]))) ++position;
+            if (position < normalized.size() && normalized[position] == '=') {
+                ++position;
+                while (position < normalized.size() && std::isspace(static_cast<unsigned char>(normalized[position]))) ++position;
+                if (position < normalized.size() && (normalized[position] == '"' || normalized[position] == '\'')) {
+                    const char quote = normalized[position++];
+                    position = normalized.find(quote, position);
+                    if (position == std::string::npos) return false;
+                    ++position;
+                } else {
+                    position = normalized.find_first_of(" \t\r\n/", position);
+                }
+            }
+        }
+        return false;
+    }
+
     static int parse_attribute_length(const std::string& value) {
         if (value.empty()) return -1;
         try {
@@ -163,6 +229,12 @@ private:
         } catch (...) {
             return -1;
         }
+    }
+
+    static int parse_quality_height(const std::string& value) {
+        const size_t suffix = value.find_first_of("pP");
+        const std::string height = value.substr(0, suffix);
+        return parse_attribute_length(height);
     }
 
     static bool is_void_element(const std::string& tag_name) {
@@ -316,6 +388,9 @@ private:
         if (node->tag_name == "img") {
             if (node->style.properties.count("width") && node->style.width_percent < 0) node->image_width = node->style.width;
             if (node->style.properties.count("height") && node->style.height_percent < 0) node->image_height = node->style.height;
+        } else if (node->tag_name == "video") {
+            if (node->style.properties.count("width") && node->style.width_percent < 0) node->media_width = node->style.width;
+            if (node->style.properties.count("height") && node->style.height_percent < 0) node->media_height = node->style.height;
         }
         for (const auto& child : node->children) {
             apply_styles(child, rules);
